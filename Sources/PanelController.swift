@@ -3,25 +3,50 @@ import SwiftUI
 import Combine
 
 final class GlintPanel: NSPanel {
+    var onUserDragBeginning: (() -> Void)?
+    var onUserDragEnded: ((NSEvent.ModifierFlags) -> Void)?
+    var onUserResizeBeginning: (() -> Void)?
+    private var dragMovement: WindowDragMovement?
+    var isUserDragging: Bool { dragMovement != nil }
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    func recordDragMovement() -> Bool { dragMovement?.record(frame.origin) ?? false }
+    func performUserDrag(with event: NSEvent) -> Bool {
+        onUserDragBeginning?()
+        dragMovement = WindowDragMovement(origin: frame.origin)
+        performDrag(with: event)
+        _ = recordDragMovement()
+        let didDrag = dragMovement?.didDrag == true
+        dragMovement = nil
+        if didDrag { onUserDragEnded?(NSEvent.modifierFlags) }
+        return didDrag
+    }
 }
 
 @MainActor
 final class PanelController: NSObject, ObservableObject, NSWindowDelegate {
     let store: TaskStore
     let preferences: Preferences
+    let state: PanelState
+    let snapping = SnapState()
     let shortcut = GlobalShortcut()
     var panel: GlintPanel!
     private var settingsWindow: NSWindow?
     private var subscriptions: Set<AnyCancellable> = []
     private var changingFrame = false
+    private var appliedPresentation: PanelPresentation = .list
+    private var snapTimer: Timer?
+    private var snapTarget: NSRect?
+    private var screenLayoutTimer: Timer?
+    private var lastScreenLayout: [SnapScreen] = []
     @Published var focusRequest = UUID()
     @Published var visible = true
 
     init(store: TaskStore, preferences: Preferences) {
         self.store = store
         self.preferences = preferences
+        self.state = PanelState(activeTaskIDs: Set(store.active.map(\.id)))
         super.init()
         let window = GlintPanel(contentRect: NSRect(x: 0, y: 0, width: 300, height: 380), styleMask: [.borderless, .resizable, .nonactivatingPanel], backing: .buffered, defer: false)
         panel = window
@@ -36,15 +61,42 @@ final class PanelController: NSObject, ObservableObject, NSWindowDelegate {
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenNone, .ignoresCycle]
         window.animationBehavior = .none
         window.delegate = self
-        window.contentView = NSHostingView(rootView: TodoView(store: store, preferences: preferences, controller: self))
+        window.onUserDragBeginning = { [weak self] in self?.cancelSnapAnimation(finish: true) }
+        window.onUserDragEnded = { [weak self] flags in self?.finishUserDrag(bypass: flags.contains(.option)) }
+        window.onUserResizeBeginning = { [weak self] in self?.prepareForManualResize() }
+        window.contentView = NSHostingView(rootView: TodoView(store: store, preferences: preferences, controller: self, state: state))
         updatePin()
         restoreFrame()
         preferences.$pinned.dropFirst().sink { [weak self] _ in
             DispatchQueue.main.async { self?.updatePin() }
         }.store(in: &subscriptions)
+        snapping.$enabled.dropFirst().sink { [weak self] enabled in
+            if !enabled { self?.cancelSnapAnimation(finish: false) }
+        }.store(in: &subscriptions)
+        store.$revision.dropFirst().sink { [weak self] _ in
+            guard let self else { return }
+            self.transition { self.state.reconcile(activeTaskIDs: Set(self.store.active.map(\.id))) }
+        }.store(in: &subscriptions)
         shortcut.onPress = { [weak self] in self?.toggleVisibility() }
         updateShortcut()
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(accessibilityChanged), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(workspaceChanged), name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
+        // Track usable bounds, including Dock changes, while attached. Reposition
+        // only when those bounds actually change, and never during a user drag.
+        let monitor = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.snapping.attachment != nil, self.snapTimer == nil,
+                      !self.changingFrame, !self.panel.isUserDragging else { return }
+                let screens = self.snapScreens
+                if screens != self.lastScreenLayout {
+                    self.lastScreenLayout = screens
+                    self.ensureReachable()
+                }
+            }
+        }
+        screenLayoutTimer = monitor
+        RunLoop.main.add(monitor, forMode: .common)
     }
 
     func updatePin() { panel.level = preferences.pinned ? .floating : .normal }
@@ -56,7 +108,7 @@ final class PanelController: NSObject, ObservableObject, NSWindowDelegate {
         visible = true
         ensureReachable()
         if focus {
-            if preferences.collapsed { toggleCollapse() }
+            showList()
             NSApp.activate(ignoringOtherApps: true)
             panel.makeKeyAndOrderFront(nil)
             focusRequest = UUID()
@@ -65,13 +117,17 @@ final class PanelController: NSObject, ObservableObject, NSWindowDelegate {
     func hide() { panel.makeFirstResponder(nil); panel.orderOut(nil); visible = false }
     func toggleVisibility() { visible ? hide() : show() }
     func windowShouldClose(_ sender: NSWindow) -> Bool { hide(); return false }
-    func windowDidMove(_ notification: Notification) { saveFrame() }
+    func windowDidMove(_ notification: Notification) {
+        if panel.recordDragMovement() { snapping.detach() }
+        saveFrame()
+    }
     func windowDidResize(_ notification: Notification) { saveFrame() }
+    func windowWillStartLiveResize(_ notification: Notification) { prepareForManualResize() }
 
     private func saveFrame() {
-        guard !changingFrame else { return }
+        guard !changingFrame, snapTimer == nil else { return }
         UserDefaults.standard.set(NSStringFromRect(panel.frame), forKey: "panelFrame")
-        UserDefaults.standard.set(NSStringFromSize(panel.frame.size), forKey: preferences.collapsed ? "pillSize" : "expandedSize")
+        state.saveSize(panel.frame.size, for: appliedPresentation)
     }
 
     private func restoreFrame() {
@@ -80,77 +136,137 @@ final class PanelController: NSObject, ObservableObject, NSWindowDelegate {
             let rect = NSRectFromString(saved)
             if rect.width.isFinite, rect.height.isFinite, rect.width > 0, rect.height > 0 { panel.setFrame(rect, display: false) }
         } else { resetPosition() }
-        if preferences.collapsed {
-            panel.minSize = PanelGeometry.pillMinimum
-            panel.maxSize = PanelGeometry.pillMaximum
-            let saved = UserDefaults.standard.string(forKey: "pillSize").map(NSSizeFromString) ?? panel.frame.size
-            let size = PanelGeometry.pillSize(saved)
-            let top = panel.frame.maxY
-            panel.setFrame(NSRect(x: panel.frame.minX, y: top - size.height, width: size.width, height: size.height), display: false)
-        } else {
-            panel.minSize = NSSize(width: 270, height: 240)
-            panel.maxSize = NSSize(width: 520, height: 850)
-        }
+        appliedPresentation = state.presentation
+        applySize(state.savedSize(for: state.presentation), presentation: state.presentation)
         changingFrame = false
         ensureReachable()
     }
 
     func toggleCollapse() {
         panel.makeFirstResponder(nil)
-        let oldFrame = panel.frame
-        UserDefaults.standard.set(NSStringFromSize(oldFrame.size), forKey: preferences.collapsed ? "pillSize" : "expandedSize")
+        transition { state.presentation == .list ? state.collapse() : state.showList() }
+    }
+
+    func showList() {
+        panel.makeFirstResponder(nil)
+        transition { state.showList() }
+    }
+    func focus(on id: UUID) {
+        panel.makeFirstResponder(nil)
+        transition { state.focus(on: id, activeTaskIDs: Set(store.active.map(\.id))) }
+    }
+    func stopFocusing() { transition { state.stopFocusing() } }
+    func completeFocusedTask() {
+        guard let id = state.focusedTaskID, store.active.contains(where: { $0.id == id }) else { return }
+        store.toggle(id)
+        // The store revision subscription clears focus only after a successful save.
+    }
+
+    private func transition(_ change: () -> Void) {
+        guard !changingFrame else { return }
+        cancelSnapAnimation(finish: true)
+        state.saveSize(panel.frame.size, for: appliedPresentation)
         changingFrame = true
-        preferences.collapsed.toggle()
-        let size: NSSize
-        if preferences.collapsed {
-            let saved = UserDefaults.standard.string(forKey: "pillSize").map(NSSizeFromString) ?? PanelGeometry.pillDefault
-            size = PanelGeometry.pillSize(saved)
-            panel.minSize = PanelGeometry.pillMinimum
-            panel.maxSize = PanelGeometry.pillMaximum
-        } else {
-            panel.minSize = NSSize(width: 270, height: 240)
-            panel.maxSize = NSSize(width: 520, height: 850)
-            let saved = UserDefaults.standard.string(forKey: "expandedSize").map(NSSizeFromString) ?? NSSize(width: 300, height: 380)
-            size = NSSize(width: min(520, max(270, saved.width)), height: min(850, max(240, saved.height)))
+        change()
+        if state.presentation != appliedPresentation {
+            appliedPresentation = state.presentation
+            applySize(state.savedSize(for: appliedPresentation), presentation: appliedPresentation)
         }
-        panel.setFrame(NSRect(x: oldFrame.minX, y: oldFrame.maxY - size.height, width: size.width, height: size.height), display: true)
         changingFrame = false
         ensureReachable()
         saveFrame()
     }
 
+    private func applySize(_ size: NSSize, presentation: PanelPresentation) {
+        let frame = panel.frame
+        // Widen constraints first so switching between compact and full sizes is valid.
+        panel.maxSize = NSSize(width: 520, height: 850)
+        panel.minSize = presentation.minimum
+        panel.maxSize = presentation.maximum
+        panel.setFrame(NSRect(x: frame.minX, y: frame.maxY - size.height, width: size.width, height: size.height), display: true)
+    }
+
     func resetPosition() {
+        cancelSnapAnimation(finish: false)
+        snapping.detach()
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
         let frame = screen.visibleFrame
         panel.setFrameOrigin(NSPoint(x: frame.maxX - panel.frame.width - 28, y: frame.maxY - panel.frame.height - 28))
         saveFrame()
     }
 
-    @objc private func screensChanged() { ensureReachable() }
+    @objc private func screensChanged() {
+        cancelSnapAnimation(finish: false)
+        ensureReachable()
+    }
+    @objc private func workspaceChanged() { ensureReachable() }
+    @objc private func accessibilityChanged() {
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { cancelSnapAnimation(finish: true) }
+    }
+
+    private var snapScreens: [SnapScreen] {
+        NSScreen.screens.map { screen in
+            let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
+            let serial = CGDisplaySerialNumber(id)
+            let identity = serial == 0 ? "display-\(id)" : "\(CGDisplayVendorNumber(id))-\(CGDisplayModelNumber(id))-\(serial)"
+            return SnapScreen(id: identity, frame: screen.frame, visibleFrame: screen.visibleFrame)
+        }
+    }
+
     func ensureReachable() {
-        guard !NSScreen.screens.isEmpty else { return }
-        let frame = panel.frame
-        let screen = NSScreen.screens.max { lhs, rhs in
-            let a = lhs.visibleFrame.intersection(frame)
-            let b = rhs.visibleFrame.intersection(frame)
-            return (a.isNull ? 0 : a.width * a.height) < (b.isNull ? 0 : b.width * b.height)
-        }!
-        let bounds = screen.visibleFrame.insetBy(dx: 8, dy: 8)
-        var corrected = frame
-        corrected.size.width = min(frame.width, bounds.width)
-        corrected.size.height = min(frame.height, bounds.height)
-        corrected.origin.x = max(bounds.minX, min(frame.minX, bounds.maxX - corrected.width))
-        corrected.origin.y = max(bounds.minY, min(frame.minY, bounds.maxY - corrected.height))
-        if corrected != frame { panel.setFrame(corrected, display: true) }
+        let corrected = snapping.reposition(panel.frame, screens: snapScreens)
+        if corrected != panel.frame { panel.setFrame(corrected, display: true) }
+        saveFrame()
+    }
+
+    private func prepareForManualResize() {
+        cancelSnapAnimation(finish: true)
+        snapping.detach()
+    }
+
+    private func finishUserDrag(bypass: Bool) {
+        let screens = snapScreens
+        let result = snapping.finishDrag(panel.frame, screens: screens, pointer: NSEvent.mouseLocation, bypass: bypass)
+        let target = snapping.reposition(result, screens: screens)
+        guard target != panel.frame else { saveFrame(); return }
+        if snapping.attachment == nil || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            panel.setFrame(target, display: true)
+            saveFrame()
+            return
+        }
+        let origin = panel.frame
+        let started = ProcessInfo.processInfo.systemUptime
+        snapTarget = target
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let progress = min(1, (ProcessInfo.processInfo.systemUptime - started) / 0.12)
+                if progress >= 1 { self.cancelSnapAnimation(finish: true); return }
+                let eased = 1 - pow(1 - progress, 3)
+                self.panel.setFrameOrigin(NSPoint(x: origin.minX + (target.minX - origin.minX) * eased,
+                                                 y: origin.minY + (target.minY - origin.minY) * eased))
+            }
+        }
+        snapTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func cancelSnapAnimation(finish: Bool) {
+        snapTimer?.invalidate()
+        snapTimer = nil
+        let target = snapTarget
+        snapTarget = nil
+        if finish, let target { panel.setFrame(target, display: true) }
+        if target != nil { saveFrame() }
     }
 
     func openSettings() {
         preferences.refreshLogin()
         if settingsWindow == nil {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 410, height: 310), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 410, height: 380), styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = "Glint Settings"
             window.isReleasedWhenClosed = false
-            window.contentView = NSHostingView(rootView: SettingsView(preferences: preferences, controller: self))
+            window.contentView = NSHostingView(rootView: SettingsView(preferences: preferences, controller: self, snapping: snapping))
             window.center()
             settingsWindow = window
         }
@@ -166,9 +282,8 @@ struct WindowDragArea: NSViewRepresentable {
     final class DragView: NSView {
         var clicked: (() -> Void)?
         override func mouseDown(with event: NSEvent) {
-            let origin = window?.frame.origin
-            window?.performDrag(with: event)
-            if origin == window?.frame.origin { clicked?() }
+            guard let panel = window as? GlintPanel else { return }
+            if !panel.performUserDrag(with: event) { clicked?() }
         }
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     }
@@ -180,6 +295,7 @@ struct ResizeHandle: NSViewRepresentable {
     final class Handle: NSView {
         override func mouseDown(with event: NSEvent) {
             guard let window else { return }
+            (window as? GlintPanel)?.onUserResizeBeginning?()
             let original = window.frame
             let start = NSEvent.mouseLocation
             while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
@@ -245,6 +361,7 @@ struct WindowResizeBorder: NSViewRepresentable {
             guard let window else { return }
             let selected = edges(at: convert(event.locationInWindow, from: nil))
             guard !selected.isEmpty else { return }
+            (window as? GlintPanel)?.onUserResizeBeginning?()
             let original = window.frame
             let start = NSEvent.mouseLocation
             while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {

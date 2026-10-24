@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import Combine
 
 @main
 struct TaskStoreTests {
@@ -83,6 +84,72 @@ struct TaskStoreTests {
         expect(PanelGeometry.pillSize(CGSize(width: 360, height: 72)) == CGSize(width: 360, height: 72), "Saved custom pill size is preserved")
         expect(PanelGeometry.pillSize(CGSize(width: 1, height: 1)) == minimum, "Restored pill respects minimum size")
         expect(PanelGeometry.pillSize(CGSize(width: CGFloat.infinity, height: CGFloat.nan)) == PanelGeometry.pillDefault, "Invalid saved dimensions use defaults")
-        print("Passed \(checks) task, persistence, and window geometry checks.")
+        let suite = "GlintTests.Focus.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let focusStore = try TaskStore(inMemory: true)
+        focusStore.add("First focus task")
+        focusStore.add("Second focus task")
+        let firstFocus = focusStore.active[0].id, secondFocus = focusStore.active[1].id
+        func activeIDs() -> Set<UUID> { Set(focusStore.active.map(\.id)) }
+        let state = PanelState(defaults: defaults, activeTaskIDs: activeIDs())
+        let subscription = focusStore.$revision.dropFirst().sink { _ in state.reconcile(activeTaskIDs: activeIDs()) }
+        defer { subscription.cancel() }
+
+        expect(state.presentation == .list && state.focusedTaskID == nil, "Fresh installation starts in list mode")
+        state.collapse()
+        expect(state.presentation == .countPill, "No focus selection uses task-count pill")
+        state.focus(on: firstFocus, activeTaskIDs: activeIDs())
+        expect(state.presentation == .focusPill && state.focusedTaskID == firstFocus, "Selecting a task enters focus mode")
+        let originalTasks = focusStore.snapshot()
+        state.showList()
+        expect(state.presentation == .list && state.focusedTaskID == firstFocus, "List view retains focus selection")
+        state.collapse()
+        expect(state.presentation == .focusPill, "Collapsing list resumes selected task")
+        state.focus(on: secondFocus, activeTaskIDs: activeIDs())
+        expect(state.focusedTaskID == secondFocus, "A new focus selection replaces the previous one")
+        expect(focusStore.snapshot() == originalTasks, "Changing focus does not change task data")
+        state.focus(on: UUID(), activeTaskIDs: activeIDs())
+        expect(state.focusedTaskID == secondFocus, "Stale IDs cannot replace valid focus")
+        focusStore.edit(secondFocus, text: "Updated focus text")
+        expect(state.focusedTaskID == secondFocus && focusStore.active.first(where: { $0.id == state.focusedTaskID })?.text == "Updated focus text", "Editing preserves focus and updates its task")
+
+        state.saveSize(CGSize(width: 420, height: 600), for: .list)
+        state.saveSize(CGSize(width: 210, height: 50), for: .countPill)
+        state.saveSize(CGSize(width: 380, height: 100), for: .focusPill)
+        let restored = PanelState(defaults: defaults, activeTaskIDs: activeIDs())
+        expect(restored.presentation == .focusPill && restored.focusedTaskID == secondFocus, "Relaunch restores focus pill and selected task")
+        expect(restored.savedSize(for: .list) == CGSize(width: 420, height: 600), "Expanded size is saved independently")
+        expect(restored.savedSize(for: .countPill) == CGSize(width: 210, height: 50), "Count pill size is saved independently")
+        expect(restored.savedSize(for: .focusPill) == CGSize(width: 380, height: 100), "Focus pill size is saved independently")
+        state.showList()
+        let restoredList = PanelState(defaults: defaults, activeTaskIDs: activeIDs())
+        expect(restoredList.presentation == .list && restoredList.focusedTaskID == secondFocus, "Relaunch preserves list view with paused focus selection")
+        state.collapse()
+        focusStore.toggle(secondFocus)
+        expect(state.presentation == .countPill && state.focusedTaskID == nil, "Successful completion returns to task-count pill")
+        expect(focusStore.active.count == 1, "Focus completion never automatically chooses next task")
+        focusStore.undoManager.undo()
+        expect(focusStore.active.contains(where: { $0.id == secondFocus }) && state.focusedTaskID == nil, "Undo restores task without restoring focus")
+        state.focus(on: firstFocus, activeTaskIDs: activeIDs())
+        state.showList()
+        focusStore.delete(firstFocus)
+        expect(state.presentation == .list && state.focusedTaskID == nil, "Deleting selected task from list clears focus without collapsing")
+        state.focus(on: secondFocus, activeTaskIDs: activeIDs())
+        state.stopFocusing()
+        expect(state.presentation == .countPill && state.focusedTaskID == nil, "Stop focusing from focus pill returns to count pill")
+        state.focus(on: secondFocus, activeTaskIDs: activeIDs())
+        state.showList()
+        state.stopFocusing()
+        expect(state.presentation == .list && state.focusedTaskID == nil, "Stop focusing in list stays in list")
+        defaults.set(firstFocus.uuidString, forKey: "focusedTaskID")
+        defaults.set(true, forKey: "collapsed")
+        let stale = PanelState(defaults: defaults, activeTaskIDs: activeIDs())
+        expect(stale.presentation == .countPill && stale.focusedTaskID == nil, "Stale saved selection falls back to count pill")
+        expect(defaults.string(forKey: "focusedTaskID") == nil, "Invalid saved selection is removed")
+        expect(PanelPresentation.focusPill.clamped(CGSize(width: 1, height: 1)) == CGSize(width: 240, height: 48), "Focus pill minimum keeps buttons and text reachable")
+        expect(PanelPresentation.focusPill.clamped(CGSize(width: 999, height: 999)) == CGSize(width: 520, height: 180), "Focus pill maximum respects design bounds")
+        checks += runSnappingTests()
+        print("Passed \(checks) task, persistence, geometry, focus, and snapping checks.")
     }
 }

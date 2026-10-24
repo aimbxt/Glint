@@ -5,6 +5,7 @@ import Carbon
 struct SettingsView: View {
     @ObservedObject var preferences: Preferences
     @ObservedObject var controller: PanelController
+    @ObservedObject var snapping: SnapState
     @State private var recording = false
 
     var body: some View {
@@ -37,6 +38,8 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             if let error = preferences.shortcutError { Text(error).font(.caption).foregroundStyle(.red) }
+            Toggle("Snap to screen edges", isOn: $snapping.enabled)
+                .help("Snap on release near an edge or corner. Hold Option to bypass.")
             Toggle("Launch Glint at login", isOn: Binding(get: { preferences.loginEnabled }, set: { preferences.setLogin($0) }))
             if let error = preferences.loginError { Text(error).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             Divider()

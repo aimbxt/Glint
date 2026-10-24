@@ -7,7 +7,6 @@ import ServiceManagement
 final class Preferences: ObservableObject {
     private let defaults: UserDefaults
     @Published var pinned: Bool { didSet { defaults.set(pinned, forKey: "pinned") } }
-    @Published var collapsed: Bool { didSet { defaults.set(collapsed, forKey: "collapsed") } }
     @Published var shortcutKey: UInt32 { didSet { defaults.set(Int(shortcutKey), forKey: "shortcutKey") } }
     @Published var shortcutModifiers: UInt32 { didSet { defaults.set(Int(shortcutModifiers), forKey: "shortcutModifiers") } }
     @Published var shortcutError: String?
@@ -17,7 +16,6 @@ final class Preferences: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         pinned = defaults.object(forKey: "pinned") as? Bool ?? true
-        collapsed = defaults.bool(forKey: "collapsed")
         shortcutKey = UInt32(defaults.object(forKey: "shortcutKey") as? Int ?? kVK_ANSI_T)
         shortcutModifiers = UInt32(defaults.object(forKey: "shortcutModifiers") as? Int ?? (controlKey | optionKey))
         refreshLogin()

@@ -51,6 +51,7 @@ struct TodoView: View {
     @ObservedObject var store: TaskStore
     @ObservedObject var preferences: Preferences
     @ObservedObject var controller: PanelController
+    @ObservedObject var state: PanelState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var newTask = ""
     @State private var completedExpanded = false
@@ -58,15 +59,21 @@ struct TodoView: View {
 
     var body: some View {
         Group {
-            if preferences.collapsed { pill } else { card }
+            switch state.presentation {
+            case .list: card
+            case .countPill: pill
+            case .focusPill:
+                if let item = store.active.first(where: { $0.id == state.focusedTaskID }) { focusPill(item) }
+                else { pill }
+            }
         }
         .background {
             GeometryReader { proxy in
-                GlassSurface(radius: preferences.collapsed ? min(proxy.size.width, proxy.size.height) / 2 : 24)
+                GlassSurface(radius: state.presentation.isCompact ? min(proxy.size.width, proxy.size.height) / 2 : 24)
             }
         }
-        .clipShape(PanelShape(collapsed: preferences.collapsed))
-        .overlay(PanelShape(collapsed: preferences.collapsed).stroke(.white.opacity(0.22), lineWidth: 0.75).allowsHitTesting(false))
+        .clipShape(PanelShape(collapsed: state.presentation.isCompact))
+        .overlay(PanelShape(collapsed: state.presentation.isCompact).stroke(.white.opacity(0.22), lineWidth: 0.75).allowsHitTesting(false))
         .overlay(WindowResizeBorder().accessibilityHidden(true))
         .tint(glintAccent)
         .onChange(of: controller.focusRequest) { _, _ in entryFocused = true }
@@ -88,6 +95,58 @@ struct TodoView: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { controller.toggleCollapse() }
         .contextMenu { Button("Expand") { controller.toggleCollapse() }; Button("Hide") { controller.hide() } }
+    }
+
+    private func focusPill(_ item: TodoItem) -> some View {
+        HStack(spacing: 8) {
+            Button { controller.completeFocusedTask() } label: {
+                Image(systemName: "circle")
+                    .font(.system(size: 21, weight: .light))
+                    .foregroundStyle(glintAccent)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Complete task")
+            .accessibilityLabel("Complete \(item.text)")
+
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    WindowDragArea()
+                    Text(item.text)
+                        .font(.system(size: 14, weight: .medium))
+                        .lineSpacing(3)
+                        .lineLimit(max(1, Int(proxy.size.height / 20)))
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                        .allowsHitTesting(false)
+                        .accessibilityLabel("Focused task: \(item.text)")
+                }
+                .clipped()
+                .help(item.text)
+            }
+
+            Button { controller.showList() } label: {
+                Image(systemName: "list.bullet")
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 32, height: 32)
+                    .background(.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 10))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Return to all tasks")
+            .accessibilityLabel("Return to all tasks")
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .contain)
+        .contextMenu {
+            Button("Return to All Tasks") { controller.showList() }
+            Button("Stop Focusing") { controller.stopFocusing() }
+            Divider()
+            Button("Hide Glint") { controller.hide() }
+        }
     }
 
     private var card: some View {
@@ -113,6 +172,11 @@ struct TodoView: View {
                 .buttonStyle(.plain).help("Shrink to pill").accessibilityLabel("Shrink to pill")
                 Menu {
                     Toggle("Keep on top", isOn: $preferences.pinned)
+                    if let id = state.focusedTaskID {
+                        Divider()
+                        Button("Resume Focus") { controller.focus(on: id) }
+                        Button("Stop Focusing") { controller.stopFocusing() }
+                    }
                     Divider()
                     Button("Undo") { store.undoManager.undo() }.disabled(!store.undoManager.canUndo)
                     Button("Redo") { store.undoManager.redo() }.disabled(!store.undoManager.canRedo)
@@ -136,7 +200,7 @@ struct TodoView: View {
                         }.frame(maxWidth: .infinity).padding(.vertical, 58)
                     }
                     ForEach(store.active) { item in
-                        TaskRow(item: item, store: store, reduceMotion: reduceMotion)
+                        TaskRow(item: item, store: store, controller: controller, state: state, reduceMotion: reduceMotion)
                             .onDrag { NSItemProvider(object: item.id.uuidString as NSString) }
                             .onDrop(of: [.text], isTargeted: nil) { providers in
                                 guard let provider = providers.first else { return false }
@@ -151,7 +215,7 @@ struct TodoView: View {
                     if !store.completed.isEmpty {
                         DisclosureGroup(isExpanded: $completedExpanded) {
                             VStack(spacing: 3) {
-                                ForEach(store.completed) { item in TaskRow(item: item, store: store, reduceMotion: reduceMotion) }
+                                ForEach(store.completed) { item in TaskRow(item: item, store: store, controller: controller, state: state, reduceMotion: reduceMotion) }
                             }.padding(.top, 5)
                         } label: {
                             Text("Completed · \(store.completed.count)").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
@@ -184,6 +248,8 @@ struct TodoView: View {
 struct TaskRow: View {
     let item: TodoItem
     @ObservedObject var store: TaskStore
+    let controller: PanelController
+    @ObservedObject var state: PanelState
     let reduceMotion: Bool
     @State private var hovered = false
     @State private var editing = false
@@ -216,9 +282,17 @@ struct TaskRow: View {
                 }
             }.font(.system(size: 13)).lineSpacing(3).padding(.top, 2)
 
+            if state.focusedTaskID == item.id {
+                Image(systemName: "scope").font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(glintAccent).frame(height: 22)
+                    .help("Focused task").accessibilityLabel("Focused task")
+            }
+
             Menu {
                 Button("Edit") { beginEditing() }
                 if item.completedAt == nil {
+                    focusActions
+                    Divider()
                     Button("Move Up") { store.move(item.id, offset: -1) }.disabled(store.active.first?.id == item.id)
                     Button("Move Down") { store.move(item.id, offset: 1) }.disabled(store.active.last?.id == item.id)
                 }
@@ -235,10 +309,25 @@ struct TaskRow: View {
         .background(.primary.opacity(hovered ? 0.035 : 0), in: RoundedRectangle(cornerRadius: 10))
         .onHover { hovered = $0 }
         .contextMenu {
+            if item.completedAt == nil { focusActions; Divider() }
             Button("Edit") { beginEditing() }
             Button("Delete", role: .destructive) { delete() }
         }
         .onDisappear { if editing { commit() } }
+    }
+    @ViewBuilder private var focusActions: some View {
+        if state.focusedTaskID == item.id {
+            Button("Resume Focus") { focus() }
+            Button("Stop Focusing") { controller.stopFocusing() }
+        } else {
+            Button("Focus on This Task") { focus() }
+        }
+    }
+    private func focus() {
+        let id = item.id
+        if editing { commit() }
+        guard store.errorMessage == nil else { return }
+        controller.focus(on: id)
     }
     private func beginEditing() { draft = item.text; editing = true; editFocused = true }
     private func delete() {
