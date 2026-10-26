@@ -2,51 +2,6 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-private let glintAccent = Color(red: 0.22, green: 0.64, blue: 0.52)
-
-private struct PanelShape: Shape {
-    var collapsed: Bool
-    func path(in rect: CGRect) -> Path {
-        RoundedRectangle(cornerRadius: collapsed ? min(rect.width, rect.height) / 2 : 24).path(in: rect)
-    }
-}
-
-struct GlassSurface: View {
-    var radius: CGFloat
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @ViewBuilder var body: some View {
-        if reduceTransparency {
-            RoundedRectangle(cornerRadius: radius).fill(Color(nsColor: .windowBackgroundColor))
-        } else {
-            // The source also builds with the macOS 15 SDK shipped with Command Line Tools.
-            #if compiler(>=6.2)
-            if #available(macOS 26.0, *) {
-                Color.clear.glassEffect(.regular, in: .rect(cornerRadius: radius))
-            } else {
-                frosted
-            }
-            #else
-            frosted
-            #endif
-        }
-    }
-    private var frosted: some View {
-        VisualEffect().clipShape(RoundedRectangle(cornerRadius: radius))
-            .overlay(RoundedRectangle(cornerRadius: radius).fill(.primary.opacity(0.025)))
-    }
-}
-
-struct VisualEffect: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .hudWindow
-        view.blendingMode = .behindWindow
-        view.state = .active
-        return view
-    }
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
-}
-
 struct TodoView: View {
     @ObservedObject var store: TaskStore
     @ObservedObject var preferences: Preferences
@@ -55,6 +10,8 @@ struct TodoView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var newTask = ""
     @State private var completedExpanded = false
+    @State private var celebrationFrame = 0
+    @State private var celebrationTask: Task<Void, Never>?
     @FocusState private var entryFocused: Bool
 
     var body: some View {
@@ -67,46 +24,48 @@ struct TodoView: View {
                 else { pill }
             }
         }
-        .background {
-            GeometryReader { proxy in
-                GlassSurface(radius: state.presentation.isCompact ? min(proxy.size.width, proxy.size.height) / 2 : 24)
-            }
-        }
-        .clipShape(PanelShape(collapsed: state.presentation.isCompact))
-        .overlay(PanelShape(collapsed: state.presentation.isCompact).stroke(.white.opacity(0.22), lineWidth: 0.75).allowsHitTesting(false))
+        .foregroundStyle(PixelPalette.ink)
+        .pixelChrome(compact: state.presentation.isCompact)
         .overlay(WindowResizeBorder().accessibilityHidden(true))
-        .tint(glintAccent)
+        .tint(PixelPalette.accent)
+        .environment(\.readablePixelText, preferences.readableText)
         .onChange(of: controller.focusRequest) { _, _ in entryFocused = true }
+        .onChange(of: controller.completionPulse) { _, _ in celebrate() }
+        .onDisappear { celebrationTask?.cancel() }
         .alert("Couldn’t save your task", isPresented: Binding(get: { store.errorMessage != nil }, set: { if !$0 { store.errorMessage = nil } })) {
             Button("OK") { store.errorMessage = nil }
         } message: { Text(store.errorMessage ?? "") }
     }
 
     private var pill: some View {
-        HStack(spacing: 9) {
-            Image(systemName: "checkmark.circle").foregroundStyle(glintAccent)
-            Text("\(store.active.count) \(store.active.count == 1 ? "task" : "tasks") left").font(.system(size: 13, weight: .medium)).lineLimit(1).minimumScaleFactor(0.8)
-            Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+        HStack(spacing: 8) {
+            PixelIcon(glyph: celebrationFrame > 0 ? .checked : .spark, size: 16, color: celebrationFrame > 0 ? PixelPalette.accent : PixelPalette.gold)
+            Text("\(store.active.count) \(store.active.count == 1 ? "task" : "tasks") left").pixelFont(14).lineLimit(1)
+            PixelIcon(glyph: .expand, size: 12, color: PixelPalette.secondary)
         }
+        .padding(.horizontal, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(WindowDragArea(clicked: { controller.toggleCollapse() }))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(store.active.count) tasks left. Expand Glint")
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { controller.toggleCollapse() }
-        .contextMenu { Button("Expand") { controller.toggleCollapse() }; Button("Hide") { controller.hide() } }
+        .contextMenu {
+            Button("Expand") { controller.toggleCollapse() }
+            Button("Hide Glint") { controller.hide() }
+            Divider()
+            Button("Quit Glint") { controller.quit() }
+        }
     }
 
     private func focusPill(_ item: TodoItem) -> some View {
         HStack(spacing: 8) {
             Button { controller.completeFocusedTask() } label: {
-                Image(systemName: "circle")
-                    .font(.system(size: 21, weight: .light))
-                    .foregroundStyle(glintAccent)
+                PixelIcon(glyph: .checkbox, size: 18)
                     .frame(width: 32, height: 32)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PixelButtonStyle(raised: false))
             .help("Complete task")
             .accessibilityLabel("Complete \(item.text)")
 
@@ -114,9 +73,9 @@ struct TodoView: View {
                 ZStack(alignment: .leading) {
                     WindowDragArea()
                     Text(item.text)
-                        .font(.system(size: 14, weight: .medium))
+                        .pixelFont(16)
                         .lineSpacing(3)
-                        .lineLimit(max(1, Int(proxy.size.height / 20)))
+                        .lineLimit(max(1, Int(proxy.size.height / 22)))
                         .truncationMode(.tail)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                         .allowsHitTesting(false)
@@ -127,18 +86,16 @@ struct TodoView: View {
             }
 
             Button { controller.showList() } label: {
-                Image(systemName: "list.bullet")
-                    .font(.system(size: 14, weight: .medium))
+                PixelIcon(glyph: .list, size: 18)
                     .frame(width: 32, height: 32)
-                    .background(.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 10))
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PixelButtonStyle())
             .help("Return to all tasks")
             .accessibilityLabel("Return to all tasks")
         }
         .padding(.horizontal, 18)
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .contain)
         .contextMenu {
@@ -146,6 +103,8 @@ struct TodoView: View {
             Button("Stop Focusing") { controller.stopFocusing() }
             Divider()
             Button("Hide Glint") { controller.hide() }
+            Divider()
+            Button("Quit Glint") { controller.quit() }
         }
     }
 
@@ -155,21 +114,24 @@ struct TodoView: View {
                 ZStack(alignment: .leading) {
                     WindowDragArea()
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("To-do").font(.system(size: 19, weight: .semibold, design: .rounded))
-                        Text("\(store.active.count)").font(.system(size: 11, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.secondary).padding(.horizontal, 7).padding(.vertical, 3)
-                            .background(.primary.opacity(0.055), in: Capsule())
+                        Text("To-do").pixelFont(20, weight: .semibold)
+                        Text("\(store.active.count)").pixelFont(14)
+                            .foregroundStyle(PixelPalette.secondary).padding(.horizontal, 7).padding(.vertical, 2)
+                            .background(PixelPalette.inset)
+                            .overlay(alignment: .topTrailing) {
+                                if celebrationFrame > 0 {
+                                    PixelIcon(glyph: .spark, size: celebrationFrame == 1 ? 9 : 12, color: PixelPalette.gold)
+                                        .offset(x: 8, y: -6)
+                                }
+                            }
                     }.allowsHitTesting(false)
                 }.frame(height: 46)
                 Button { controller.toggleCollapse() } label: {
-                    Image(systemName: "capsule.lefthalf.filled")
-                        .font(.system(size: 17, weight: .medium))
-                        .foregroundStyle(.primary.opacity(0.8))
+                    PixelIcon(glyph: .collapse, size: 20, color: PixelPalette.ink)
                         .frame(width: 38, height: 36)
-                        .background(.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 11))
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain).help("Shrink to pill").accessibilityLabel("Shrink to pill")
+                .buttonStyle(PixelButtonStyle()).help("Shrink to pill").accessibilityLabel("Shrink to pill")
                 Menu {
                     Toggle("Keep on top", isOn: $preferences.pinned)
                     if let id = state.focusedTaskID {
@@ -183,24 +145,33 @@ struct TodoView: View {
                     Divider()
                     Button("Settings…") { controller.openSettings() }
                     Button("Hide Glint") { controller.hide() }
-                    Button("Quit Glint") { NSApp.terminate(nil) }
-                } label: { Image(systemName: "ellipsis").frame(width: 23, height: 28) }
+                    Button("Quit Glint") { controller.quit() }
+                } label: {
+                    Image(nsImage: PixelBrand.image(.more))
+                        .renderingMode(.template).foregroundStyle(PixelPalette.ink)
+                        .frame(width: 32, height: 36).modifier(PixelControlFace())
+                }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("More options").accessibilityLabel("More options")
-            }.padding(.horizontal, 19).padding(.top, 10)
+                Button { controller.quit() } label: {
+                    PixelIcon(glyph: .close, size: 14, color: PixelPalette.ink)
+                        .frame(width: 32, height: 36)
+                }
+                .buttonStyle(PixelButtonStyle()).help("Quit Glint").accessibilityLabel("Quit Glint")
+            }.padding(.horizontal, 16).padding(.top, 10)
 
-            Rectangle().fill(.primary.opacity(0.07)).frame(height: 0.5).padding(.horizontal, 18).padding(.top, 4)
+            Rectangle().fill(PixelPalette.edge).frame(height: 2).padding(.horizontal, 16).padding(.top, 4)
 
             ScrollView {
                 VStack(spacing: 3) {
                     if store.items.isEmpty {
                         VStack(spacing: 12) {
-                            Image(systemName: "sun.max").font(.system(size: 30, weight: .ultraLight)).foregroundStyle(glintAccent.opacity(0.8))
-                            Text("A little room to think.").font(.system(size: 14, weight: .medium, design: .rounded))
-                            Text("Add one thing. Start there.").font(.system(size: 12)).foregroundStyle(.secondary)
-                        }.frame(maxWidth: .infinity).padding(.vertical, 58)
+                            PixelIcon(glyph: .spark, size: 36, color: PixelPalette.gold)
+                            Text("A little room to think.").pixelFont(16)
+                            Text("Add one thing. Start there.").pixelFont(14).foregroundStyle(PixelPalette.secondary)
+                        }.frame(maxWidth: .infinity).padding(.vertical, 40)
                     }
                     ForEach(store.active) { item in
-                        TaskRow(item: item, store: store, controller: controller, state: state, reduceMotion: reduceMotion)
+                        TaskRow(item: item, store: store, controller: controller, state: state)
                             .onDrag { NSItemProvider(object: item.id.uuidString as NSString) }
                             .onDrop(of: [.text], isTargeted: nil) { providers in
                                 guard let provider = providers.first else { return false }
@@ -213,34 +184,59 @@ struct TodoView: View {
                             }
                     }
                     if !store.completed.isEmpty {
-                        DisclosureGroup(isExpanded: $completedExpanded) {
-                            VStack(spacing: 3) {
-                                ForEach(store.completed) { item in TaskRow(item: item, store: store, controller: controller, state: state, reduceMotion: reduceMotion) }
-                            }.padding(.top, 5)
-                        } label: {
-                            Text("Completed · \(store.completed.count)").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                        VStack(spacing: 0) {
+                            Button { completedExpanded.toggle() } label: {
+                                HStack(spacing: 8) {
+                                    PixelIcon(glyph: completedExpanded ? .down : .right, size: 12, color: PixelPalette.secondary)
+                                    Text("Completed · \(store.completed.count)").pixelFont(14)
+                                    Spacer()
+                                }.foregroundStyle(PixelPalette.secondary).padding(.vertical, 8)
+                            }
+                            .buttonStyle(PixelButtonStyle(raised: false))
+                            .accessibilityLabel("Completed tasks, \(store.completed.count)")
+                            .accessibilityValue(completedExpanded ? "Expanded" : "Collapsed")
+                            if completedExpanded {
+                                VStack(spacing: 3) {
+                                    ForEach(store.completed) { item in TaskRow(item: item, store: store, controller: controller, state: state) }
+                                }.padding(.top, 5)
+                            }
                         }.padding(.horizontal, 9).padding(.top, 12).padding(.bottom, 6)
                     }
                 }.padding(.horizontal, 10).padding(.vertical, 12)
             }.scrollIndicators(.hidden)
 
             HStack(spacing: 9) {
-                Image(systemName: "plus").font(.system(size: 14, weight: .medium)).foregroundStyle(glintAccent)
+                PixelIcon(glyph: .plus, size: 16)
                 TextField("Add a task…", text: $newTask)
-                    .textFieldStyle(.plain).font(.system(size: 13)).focused($entryFocused)
+                    .textFieldStyle(.plain).pixelFont(16).focused($entryFocused)
                     .onSubmit {
                         store.add(newTask)
                         if store.errorMessage == nil { newTask = "" }
                         entryFocused = true
                     }.accessibilityLabel("Add a task")
             }
-            .padding(12).background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 13))
-            .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(.primary.opacity(entryFocused ? 0.12 : 0.03), lineWidth: 0.75))
+            .padding(12).background(PixelPalette.inset)
+            .overlay(Rectangle().strokeBorder(entryFocused ? PixelPalette.accent : PixelPalette.edge.opacity(0.65), lineWidth: entryFocused ? 2 : 1))
             .padding(.horizontal, 16).padding(.bottom, 18).padding(.top, 6)
         }
         .overlay(alignment: .bottomTrailing) {
-            Image(systemName: "line.3.horizontal.decrease").font(.system(size: 8)).rotationEffect(.degrees(-45)).foregroundStyle(.tertiary)
+            PixelIcon(glyph: .grip, size: 12, color: PixelPalette.secondary)
                 .frame(width: 18, height: 18).overlay(ResizeHandle()).help("Drag to resize")
+        }
+    }
+
+    private func celebrate() {
+        celebrationTask?.cancel()
+        celebrationTask = Task { @MainActor in
+            celebrationFrame = 1
+            do {
+                if !reduceMotion {
+                    try await Task.sleep(for: .milliseconds(120))
+                    celebrationFrame = 2
+                }
+                try await Task.sleep(for: .milliseconds(240))
+                celebrationFrame = 0
+            } catch { }
         }
     }
 }
@@ -250,7 +246,6 @@ struct TaskRow: View {
     @ObservedObject var store: TaskStore
     let controller: PanelController
     @ObservedObject var state: PanelState
-    let reduceMotion: Bool
     @State private var hovered = false
     @State private var editing = false
     @State private var draft = ""
@@ -261,13 +256,12 @@ struct TaskRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Button {
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) { store.toggle(item.id) }
+                controller.toggleTask(item.id)
             } label: {
-                Image(systemName: item.completedAt == nil ? "circle" : "checkmark.circle.fill")
-                    .font(.system(size: 18, weight: .light))
-                    .foregroundStyle(item.completedAt == nil ? Color.primary.opacity(0.30) : glintAccent)
-                    .frame(width: 22, height: 22)
-            }.buttonStyle(.plain).accessibilityLabel(item.completedAt == nil ? "Complete \(item.text)" : "Reopen \(item.text)")
+                PixelIcon(glyph: item.completedAt == nil ? .checkbox : .checked, size: 18,
+                          color: item.completedAt == nil ? PixelPalette.edge : PixelPalette.accent)
+                    .frame(width: 32, height: 32)
+            }.buttonStyle(PixelButtonStyle(raised: false)).accessibilityLabel(item.completedAt == nil ? "Complete \(item.text)" : "Reopen \(item.text)")
 
             Group {
                 if editing {
@@ -275,17 +269,16 @@ struct TaskRow: View {
                         .onSubmit { commit() }.onExitCommand { editing = false; editFocused = false }
                         .onChange(of: editFocused) { _, value in if !value { commit() } }
                 } else {
-                    Text(item.text).strikethrough(item.completedAt != nil).foregroundStyle(item.completedAt == nil ? .primary : .secondary)
+                    Text(item.text).strikethrough(item.completedAt != nil).foregroundStyle(item.completedAt == nil ? PixelPalette.ink : PixelPalette.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                         .onTapGesture(count: 2) { beginEditing() }
                         .accessibilityAddTraits(.isButton).accessibilityAction(named: "Edit task") { beginEditing() }
                 }
-            }.font(.system(size: 13)).lineSpacing(3).padding(.top, 2)
+            }.pixelFont(16).lineSpacing(3).padding(.top, 4)
 
             if state.focusedTaskID == item.id {
-                Image(systemName: "scope").font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(glintAccent).frame(height: 22)
-                    .help("Focused task").accessibilityLabel("Focused task")
+                PixelIcon(glyph: .focus, size: 12, color: PixelPalette.gold).frame(height: 32)
+                    .help("Focused task").accessibilityHidden(false).accessibilityLabel("Focused task")
             }
 
             Menu {
@@ -298,20 +291,26 @@ struct TaskRow: View {
                 }
                 Divider()
                 Button("Delete", role: .destructive) { delete() }
-            } label: { Image(systemName: "ellipsis").frame(width: 15, height: 22) }
+            } label: {
+                Image(nsImage: PixelBrand.image(.more))
+                    .renderingMode(.template).foregroundStyle(PixelPalette.secondary)
+                    .frame(width: 24, height: 32)
+            }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 .focused($optionsFocused)
-                .opacity(hovered || editing || accessibilityFocused || optionsFocused ? 1 : 0.15)
+                .opacity(hovered || editing || accessibilityFocused || optionsFocused ? 1 : 0.65)
                 .accessibilityLabel("Options for \(item.text)")
                 .accessibilityFocused($accessibilityFocused)
         }
-        .padding(.horizontal, 8).padding(.vertical, 8)
-        .background(.primary.opacity(hovered ? 0.035 : 0), in: RoundedRectangle(cornerRadius: 10))
+        .padding(.horizontal, 6).padding(.vertical, 3)
+        .background(hovered ? PixelPalette.inset : Color.clear)
         .onHover { hovered = $0 }
         .contextMenu {
             if item.completedAt == nil { focusActions; Divider() }
             Button("Edit") { beginEditing() }
             Button("Delete", role: .destructive) { delete() }
+            Divider()
+            Button("Quit Glint") { controller.quit() }
         }
         .onDisappear { if editing { commit() } }
     }

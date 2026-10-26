@@ -10,6 +10,7 @@ swiftc -D GLINT_CLI_BUILD -parse-as-library -swift-version 5 -O \
     -module-name Glint Sources/*.swift \
     -o Glint.app/Contents/MacOS/Glint
 cp Info.plist Glint.app/Contents/Info.plist
+cp -R Resources/Fonts Glint.app/Contents/Resources/
 if [ -f Resources/Glint.icns ]; then cp Resources/Glint.icns Glint.app/Contents/Resources/; fi
 codesign --force --sign - Glint.app
 echo "Built: $PWD/Glint.app"

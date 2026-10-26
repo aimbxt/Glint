@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     private var pinItem: NSMenuItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        PixelFonts.register()
         do {
             let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("Glint", isDirectory: true)
             try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
@@ -72,7 +73,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         NSApp.mainMenu = main
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "checkmark.circle", accessibilityDescription: "Glint")
+        statusItem.button?.image = PixelBrand.menuBarImage()
+        statusItem.button?.setAccessibilityLabel("Glint")
         statusItem.button?.toolTip = "Glint — your floating to-do list"
         let menu = NSMenu(); menu.delegate = self
         showItem = item("Hide Glint", #selector(toggle)); menu.addItem(showItem)

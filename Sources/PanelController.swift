@@ -3,6 +3,7 @@ import SwiftUI
 import Combine
 
 final class GlintPanel: NSPanel {
+    var contextMenuProvider: (() -> NSMenu)?
     var onUserDragBeginning: (() -> Void)?
     var onUserDragEnded: ((NSEvent.ModifierFlags) -> Void)?
     var onUserResizeBeginning: (() -> Void)?
@@ -10,6 +11,15 @@ final class GlintPanel: NSPanel {
     var isUserDragging: Bool { dragMovement != nil }
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        if modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "q" {
+            NSApp.terminate(nil)
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
 
     func recordDragMovement() -> Bool { dragMovement?.record(frame.origin) ?? false }
     func performUserDrag(with event: NSEvent) -> Bool {
@@ -42,6 +52,7 @@ final class PanelController: NSObject, ObservableObject, NSWindowDelegate {
     private var lastScreenLayout: [SnapScreen] = []
     @Published var focusRequest = UUID()
     @Published var visible = true
+    @Published private(set) var completionPulse = 0
 
     init(store: TaskStore, preferences: Preferences) {
         self.store = store
@@ -57,14 +68,15 @@ final class PanelController: NSObject, ObservableObject, NSWindowDelegate {
         window.becomesKeyOnlyIfNeeded = false
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.hasShadow = true
+        window.hasShadow = false
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenNone, .ignoresCycle]
         window.animationBehavior = .none
         window.delegate = self
         window.onUserDragBeginning = { [weak self] in self?.cancelSnapAnimation(finish: true) }
         window.onUserDragEnded = { [weak self] flags in self?.finishUserDrag(bypass: flags.contains(.option)) }
         window.onUserResizeBeginning = { [weak self] in self?.prepareForManualResize() }
-        window.contentView = NSHostingView(rootView: TodoView(store: store, preferences: preferences, controller: self, state: state))
+        window.contextMenuProvider = { [weak self] in self?.makePanelMenu() ?? NSMenu() }
+        window.contentView = GlintHostingView(rootView: TodoView(store: store, preferences: preferences, controller: self, state: state))
         updatePin()
         restoreFrame()
         preferences.$pinned.dropFirst().sink { [weak self] _ in
@@ -115,7 +127,39 @@ final class PanelController: NSObject, ObservableObject, NSWindowDelegate {
         } else { panel.orderFrontRegardless() }
     }
     func hide() { panel.makeFirstResponder(nil); panel.orderOut(nil); visible = false }
+    func quit() { panel.makeFirstResponder(nil); NSApp.terminate(nil) }
     func toggleVisibility() { visible ? hide() : show() }
+
+    private func makePanelMenu() -> NSMenu {
+        let menu = NSMenu()
+        @discardableResult func add(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.target = self
+            menu.addItem(item)
+            return item
+        }
+        if state.presentation == .list { add("Shrink to Pill", #selector(menuCollapse)) }
+        else { add("Return to All Tasks", #selector(menuShowList)) }
+        if state.focusedTaskID != nil {
+            if state.presentation != .focusPill { add("Resume Focus", #selector(menuResumeFocus)) }
+            add("Stop Focusing", #selector(menuStopFocus))
+        }
+        menu.addItem(.separator())
+        add("Keep on Top", #selector(menuTogglePin)).state = preferences.pinned ? .on : .off
+        add("Settings…", #selector(menuSettings))
+        add("Hide Glint", #selector(menuHide))
+        menu.addItem(.separator())
+        add("Quit Glint", #selector(menuQuit), key: "q")
+        return menu
+    }
+    @objc private func menuCollapse() { toggleCollapse() }
+    @objc private func menuShowList() { showList() }
+    @objc private func menuResumeFocus() { if let id = state.focusedTaskID { focus(on: id) } }
+    @objc private func menuStopFocus() { stopFocusing() }
+    @objc private func menuTogglePin() { preferences.pinned.toggle() }
+    @objc private func menuSettings() { openSettings() }
+    @objc private func menuHide() { hide() }
+    @objc private func menuQuit() { quit() }
     func windowShouldClose(_ sender: NSWindow) -> Bool { hide(); return false }
     func windowDidMove(_ notification: Notification) {
         if panel.recordDragMovement() { snapping.detach() }
@@ -158,8 +202,14 @@ final class PanelController: NSObject, ObservableObject, NSWindowDelegate {
     func stopFocusing() { transition { state.stopFocusing() } }
     func completeFocusedTask() {
         guard let id = state.focusedTaskID, store.active.contains(where: { $0.id == id }) else { return }
-        store.toggle(id)
+        toggleTask(id)
         // The store revision subscription clears focus only after a successful save.
+    }
+
+    func toggleTask(_ id: UUID) {
+        let wasActive = store.active.contains(where: { $0.id == id })
+        store.toggle(id)
+        if wasActive, store.completed.contains(where: { $0.id == id }) { completionPulse += 1 }
     }
 
     private func transition(_ change: () -> Void) {
@@ -263,8 +313,10 @@ final class PanelController: NSObject, ObservableObject, NSWindowDelegate {
     func openSettings() {
         preferences.refreshLogin()
         if settingsWindow == nil {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 410, height: 380), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 430, height: 440), styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = "Glint Settings"
+            window.backgroundColor = PixelPalette.paperNS
+            window.titlebarAppearsTransparent = true
             window.isReleasedWhenClosed = false
             window.contentView = NSHostingView(rootView: SettingsView(preferences: preferences, controller: self, snapping: snapping))
             window.center()
@@ -275,13 +327,36 @@ final class PanelController: NSObject, ObservableObject, NSWindowDelegate {
     }
 }
 
+/// Let native drag/resize regions serve the same app menu as the SwiftUI panel.
+class PanelContextView: NSView {
+    override func menu(for event: NSEvent) -> NSMenu? {
+        (window as? GlintPanel)?.contextMenuProvider?() ?? super.menu(for: event)
+    }
+    override func rightMouseDown(with event: NSEvent) {
+        if let menu = menu(for: event) { NSMenu.popUpContextMenu(menu, with: event, for: self) }
+        else { super.rightMouseDown(with: event) }
+    }
+    func handleControlClick(_ event: NSEvent) -> Bool {
+        guard event.modifierFlags.contains(.control) else { return false }
+        rightMouseDown(with: event)
+        return true
+    }
+}
+
+final class GlintHostingView<Content: View>: NSHostingView<Content> {
+    override func menu(for event: NSEvent) -> NSMenu? {
+        super.menu(for: event) ?? (window as? GlintPanel)?.contextMenuProvider?()
+    }
+}
+
 struct WindowDragArea: NSViewRepresentable {
     var clicked: (() -> Void)? = nil
     func makeNSView(context: Context) -> DragView { let view = DragView(); view.clicked = clicked; return view }
     func updateNSView(_ view: DragView, context: Context) { view.clicked = clicked }
-    final class DragView: NSView {
+    final class DragView: PanelContextView {
         var clicked: (() -> Void)?
         override func mouseDown(with event: NSEvent) {
+            if handleControlClick(event) { return }
             guard let panel = window as? GlintPanel else { return }
             if !panel.performUserDrag(with: event) { clicked?() }
         }
@@ -292,8 +367,9 @@ struct WindowDragArea: NSViewRepresentable {
 struct ResizeHandle: NSViewRepresentable {
     func makeNSView(context: Context) -> Handle { Handle() }
     func updateNSView(_ view: Handle, context: Context) {}
-    final class Handle: NSView {
+    final class Handle: PanelContextView {
         override func mouseDown(with event: NSEvent) {
+            if handleControlClick(event) { return }
             guard let window else { return }
             (window as? GlintPanel)?.onUserResizeBeginning?()
             let original = window.frame
@@ -315,7 +391,7 @@ struct WindowResizeBorder: NSViewRepresentable {
     func makeNSView(context: Context) -> BorderView { BorderView() }
     func updateNSView(_ view: BorderView, context: Context) { view.window?.invalidateCursorRects(for: view) }
 
-    final class BorderView: NSView {
+    final class BorderView: PanelContextView {
         private let edgeWidth: CGFloat = 7
         private let cornerSize: CGFloat = 17
 
@@ -358,6 +434,7 @@ struct WindowResizeBorder: NSViewRepresentable {
         }
 
         override func mouseDown(with event: NSEvent) {
+            if handleControlClick(event) { return }
             guard let window else { return }
             let selected = edges(at: convert(event.locationInWindow, from: nil))
             guard !selected.isEmpty else { return }

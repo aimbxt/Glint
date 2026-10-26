@@ -1,24 +1,35 @@
 # Glint
 
-A small, translucent to-do list that floats beside your work. Native SwiftUI + AppKit, macOS 15 or later. One list, automatic local saving, no account, no server, no dependencies.
+A small, translucent pixel-art to-do list that floats beside your work. Cozy cream, forest green, muted gold, and crisp stepped edges. Native SwiftUI + AppKit, macOS 15 or later. One list, automatic local saving, no account or server.
 
 ## Open the app
 
-Double-click **Glint.app** in this project folder. It starts near the upper-right corner of your main screen. Its checkmark icon appears in the menu bar; it has no Dock icon.
+Double-click **Glint.app** in this project folder. It starts near the upper-right corner of your main screen. Its pixel spark icon appears in the menu bar; it has no Dock icon.
 
 - Type in **Add a task…** and press Return to add a task.
-- Click a circle to complete or reopen a task. Expand **Completed** to see finished tasks.
+- Click a square checkbox to complete or reopen a task. Expand **Completed** to see finished tasks.
 - Double-click task text, or use its options menu, to edit. Return saves; Escape cancels. Leaving the field also saves. Blank edits leave the original text intact.
 - Drag task rows to reorder them, or choose **Move Up / Move Down** from a row’s menu. Dropping a row places it before the target row.
 - Drag the header to move the card. Resize its edges or use the bottom-right grip.
-- Click the capsule button in the header to shrink into a pill. Its full rounded background is clickable. The task-count pill expands when clicked; drag its center to move it. When a focus selection exists, collapsing shows the focus pill instead.
+- Click the pixel capsule button in the header to shrink into a compact status bar. Its full button background is clickable. The task-count bar expands when clicked; drag its center to move it. When a focus selection exists, collapsing shows the focus bar instead.
 - Drag any pill edge or corner to resize it horizontally or vertically. Resize cursors mark the border. Glint remembers the pill’s size separately from the expanded card, including across relaunches.
 - **Control–Option–T** shows or hides Glint. Showing it expands the card and focuses task entry.
 - The header menu has **Keep on top**, Undo/Redo, Settings, Hide, and Quit.
+- The header’s **X** button quits Glint directly. Right-click the header, compact task-count bar, focus text area, or resize border for a menu with **Quit Glint**. Control-click also works in native drag/resize regions. Task-row right-click menus include Quit as well.
 - Command-Z / Shift-Command-Z undo and redo. While editing text, the text field’s own undo history takes precedence; otherwise these act on task changes.
 - The menu bar icon provides Show/Hide, Keep on Top, Settings, and Quit. Command-W hides the panel; Command-Q quits.
 
-Settings contains a shortcut recorder, a **Snap to screen edges** toggle, optional launch at login (off initially), and a panel-position reset. Shortcut conflicts are shown there. Launch at login uses Apple’s service-management API; macOS may request approval in System Settings → General → Login Items. Keep the app at a stable location when enabling it.
+Settings contains **Readable text**, a shortcut recorder, a **Snap to screen edges** toggle, optional launch at login (off initially), and a panel-position reset. Shortcut conflicts are shown there. Launch at login uses Apple’s service-management API; macOS may request approval in System Settings → General → Login Items. Keep the app at a stable location when enabling it.
+
+## Pixel appearance
+
+Glint 1.1 uses a cozy retro theme across the task list, compact status bars, and Settings. Cream surfaces and forest-green borders have a darker companion palette that follows macOS appearance. Small amounts of background blur/translucency remain, with hard-edged shadows and original pixel icons in place of Liquid Glass reflections.
+
+Pixelify Sans is bundled locally in `Resources/Fonts`, including its SIL Open Font License and source attribution. It is registered for this app process only; it is not installed system-wide, and the app never downloads fonts at runtime. Task text and entry use 16-point type, secondary labels use 14 points, and the list heading uses 20 points. Unsupported characters use the platform’s normal font fallback.
+
+Enable **Readable text** in Settings to use the system font while retaining the pixel colors and controls. This preference is saved. Native macOS menus, alerts, title bars, and checkbox behavior remain native.
+
+Buttons depress by one point when pressed. Successful task completion briefly displays a pixel check or sparkle. Reduce Motion removes the changing sparkle frames and keeps snap placement immediate. Reduce Transparency makes the panel background fully opaque. Icons are drawn on a display-aligned pixel grid; all edge/corner resizing and snapping remain available.
 
 ## Edge snapping
 
@@ -34,7 +45,7 @@ Settings contains a shortcut recorder, a **Snap to screen edges** toggle, option
 
 ## Focus mode
 
-Choose **Focus on This Task** from an incomplete task’s options menu or right-click menu. Glint becomes a glass pill showing just that task.
+Choose **Focus on This Task** from an incomplete task’s options menu or right-click menu. Glint becomes a compact pixel task bar showing just that task.
 
 - Click the left checkbox to complete it. Glint returns to the task-count pill and does not pick another task. Command-Z restores the task without resuming focus automatically.
 - Click the right list button to return to all tasks. A small scope icon marks the selected task. Choose **Resume Focus** or **Stop Focusing** from its menu or the header menu.
@@ -57,7 +68,9 @@ The build produces **Glint.app** in this folder for the current Mac’s architec
 
 With full Xcode installed, open **Glint.xcodeproj**, select the **Glint** scheme and **My Mac**, then Run. Xcode uses the standard SwiftData `@Model` declaration. The command-line build uses its checked-in explicit model expansion because Apple’s Command Line Tools omit the SwiftData macro plugin. Both paths use the same SwiftData schema and store, with CloudKit disabled.
 
-The macOS 15 SDK builds the frosted `NSVisualEffectView` appearance. Building with Xcode 26 / Swift 6.2 or newer enables the native Liquid Glass branch on macOS 26+. Older systems retain the frosted fallback. Reduce Transparency switches to an opaque system background; Reduce Motion removes the custom completion animation.
+The same pixel theme builds with the macOS 15 SDK and runs on macOS 15 or later. The app uses `NSVisualEffectView` beneath a strongly tinted cream/forest surface. The earlier native Liquid Glass branch has been removed.
+
+`Tools/MakeIcon.swift` regenerates `Resources/Glint.icns` from the same original pixel spark used by the interface and menu bar. Its build instructions are at the top of that file.
 
 ## Data and window behavior
 
@@ -69,6 +82,8 @@ The panel floats over ordinary windows by default and joins desktop Spaces on it
 
 The command-line app compiles and its code signature verifies. The test runner passes 92 checks covering tasks, undo/redo, persistence, resizing, focus mode, snapping thresholds and corners, negative display coordinates, display selection, Option bypass, attachment restoration, independent presentation sizes, and drag-versus-click detection.
 
-Live UI inspection was blocked by the agent environment’s lack of Computer Use permission and GUI launch access. The Xcode build path and native macOS 26 glass path could not be compiled here because only the macOS 15 Command Line Tools are installed. Before a release, run the checklist in **VALIDATION.md** on actual macOS 15 and 26 systems.
+The packaged Pixelify Sans font was registered and checked against expected interface text, and its license is present. The Xcode project metadata validates and includes the font folder as a bundle resource.
+
+Live UI access was enabled during the Quit-control fix. The full-list header, visible X, native pixel menu images, task-row context actions, both compact views, right-click Quit menus, and quitting/reopening were checked in the running macOS app. Full Xcode is not installed here, so its build path remains unverified. Before a release, finish the broader checklist in **VALIDATION.md**, especially minimum window sizes, font fallback, and keyboard/VoiceOver interaction, on actual macOS 15 and newer systems.
 
 Later possibilities: multiple lists, optional Apple Reminders integration, and due dates. These are intentionally outside this version.

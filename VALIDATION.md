@@ -4,12 +4,13 @@ Automated checks: run `./test.sh`. Compile/package with `./build.sh`; validate t
 
 Manual checks still required:
 
-- Launch the app on macOS 15; verify the empty state, rounded translucent surface, readable text, menu bar icon, and absence of a Dock icon.
+- Launch the app on macOS 15; verify the empty-state pixel spark, stepped translucent surface, pixel font, pixel menu bar icon, and absence of a Dock icon.
 - Add several tasks, a long wrapping task, and whitespace-only input. Verify Return keeps task entry focused.
 - Edit by double-click and options menu. Verify Return saves, Escape cancels, focus loss saves, and blank edits preserve the original.
 - Complete/reopen tasks; expand Completed; delete from both sections. Verify Undo/Redo for completion, edits, deletion, and reorder.
 - Drag a task upward and downward; verify Move Up / Move Down reaches every position without losing tasks.
-- Click the capsule collapse button at its center and near each edge of its rounded background; verify the entire button responds.
+- Click the pixel capsule collapse button at its center and near each edge of its background; verify the entire button responds.
+- Verify the header X and both header/task-row ellipsis icons are visible. Check Quit in header options, task-row right-click, full-panel header/background, task-count bar, focus text area, and the resize border; also check Control-click. Quit through the native compact menu and through X, relaunch, and verify tasks are preserved. Check Command-Q while Glint has keyboard focus.
 - Drag the header; resize using edges and grip; scroll a long list. Collapse, drag the pill by its center, and resize it from every edge and corner. Verify horizontal, vertical, and diagonal cursors and that resizing does not expand the pill.
 - Verify minimum/maximum pill sizes, collapse/expand size preservation, and relaunch while collapsed after resizing. The expanded card and pill should each retain their own dimensions.
 - Choose **Focus on This Task** from both task menus. Verify only that task appears, with a checkbox and list button, and that selecting another task replaces it without changing list order.
@@ -31,6 +32,12 @@ Manual checks still required:
 - Close Settings with Command-W; verify Glint remains. Hide the panel with Command-W; restore it from the menu bar. Quit and relaunch; verify tasks, completion state, ordering, position, size, pin state, and collapsed state.
 - Enable launch at login from a stable app location, approve it in System Settings if required, and check after login. Disable it afterward if not wanted.
 - Check light/dark appearance over light, dark, and busy backgrounds. Enable Reduce Transparency, Reduce Motion, Full Keyboard Access, and VoiceOver. Verify task actions and options menus remain accessible.
-- On macOS 26+, build with Xcode 26+ and repeat the appearance and interaction checks with native Liquid Glass enabled.
+- Check both light and dark cozy palettes over busy wallpapers. Enable Reduce Transparency and verify an opaque surface; enable Reduce Motion and verify completion/snap feedback has no movement or changing sparkle frames.
+- Launch offline and verify Pixelify Sans is loaded. Edit long tasks and confirm font metrics match the display state; check accented text, emoji, and non-Latin text for usable fallback glyphs.
+- Toggle **Readable text** in Settings and verify the list, input, both compact views, and Settings update immediately. Relaunch and verify the choice persists.
+- At minimum list, count-bar, and focus-bar sizes, verify text wraps/truncates without overlapping the controls. Repeat at 1× and Retina display scales and after moving between displays. Pixel icon cells and stepped borders should stay crisp.
+- Verify square task checkboxes and pixel menu/collapse/list buttons retain their full click areas and are reachable by keyboard. Check VoiceOver labels for all icon-only actions and for the Completed disclosure. Native menus and alerts should remain legible.
+- Complete a task from both list and focus mode; verify brief check/spark feedback, successful undo, and no celebratory feedback on a failed save or reopened task.
+- On a newer macOS version, build with its Xcode SDK and repeat appearance and interaction checks. There is no Liquid Glass branch in this pixel-themed version.
 
 Distribution is separate: select a signing team, sign and notarize, validate both supported architectures as needed, and test the distributed artifact on a clean Mac.

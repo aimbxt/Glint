@@ -9,18 +9,21 @@ struct SettingsView: View {
     @State private var recording = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 10) {
-                Image(systemName: "checkmark.circle.fill").font(.system(size: 28)).foregroundStyle(.mint)
+                PixelIcon(glyph: .spark, size: 36, color: PixelPalette.gold)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Glint").font(.title2.weight(.semibold))
-                    Text("A little clarity, always nearby.").font(.caption).foregroundStyle(.secondary)
+                    Text("Glint").pixelFont(24, weight: .semibold)
+                    Text("A little clarity, always nearby.").pixelFont(14).foregroundStyle(PixelPalette.secondary)
                 }
             }
             HStack {
                 Text("Show / hide shortcut")
                 Spacer()
                 Button(recording ? "Press shortcut…" : preferences.shortcutLabel) { recording.toggle() }
+                    .padding(.vertical, 6).padding(.horizontal, 10)
+                    .modifier(PixelControlFace(selected: recording))
+                    .buttonStyle(.plain)
                     .overlay {
                         if recording {
                             ShortcutRecorder { key, modifiers in
@@ -35,21 +38,29 @@ struct SettingsView: View {
             }
             if recording {
                 Text("Use Control or Command with a letter, number, or Space. Escape cancels.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .pixelFont(14).foregroundStyle(PixelPalette.secondary)
             }
-            if let error = preferences.shortcutError { Text(error).font(.caption).foregroundStyle(.red) }
+            if let error = preferences.shortcutError { Text(error).pixelFont(14).foregroundStyle(PixelPalette.danger) }
+            Toggle("Readable text", isOn: $preferences.readableText)
+                .help("Use the system font while keeping the pixel-art theme.")
             Toggle("Snap to screen edges", isOn: $snapping.enabled)
                 .help("Snap on release near an edge or corner. Hold Option to bypass.")
             Toggle("Launch Glint at login", isOn: Binding(get: { preferences.loginEnabled }, set: { preferences.setLogin($0) }))
-            if let error = preferences.loginError { Text(error).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
-            Divider()
+            if let error = preferences.loginError { Text(error).pixelFont(14).foregroundStyle(PixelPalette.secondary).fixedSize(horizontal: false, vertical: true) }
+            Rectangle().fill(PixelPalette.edge).frame(height: 2)
             HStack {
-                Text("Tasks stay on this Mac.").font(.caption).foregroundStyle(.secondary)
+                Text("Tasks stay on this Mac.").pixelFont(14).foregroundStyle(PixelPalette.secondary)
                 Spacer()
                 Button("Reset panel position") { controller.resetPosition(); controller.show(focus: false) }
+                    .pixelFont(14).padding(.horizontal, 8).padding(.vertical, 6)
+                    .buttonStyle(PixelButtonStyle())
             }
         }
-        .padding(24).frame(width: 410)
+        .toggleStyle(.checkbox)
+        .pixelFont(16).foregroundStyle(PixelPalette.ink).tint(PixelPalette.accent)
+        .padding(24).frame(width: 430)
+        .background(PixelPalette.paper)
+        .environment(\.readablePixelText, preferences.readableText)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in preferences.refreshLogin() }
     }
 }
