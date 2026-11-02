@@ -20,7 +20,7 @@ struct TodoView: View {
             case .list: card
             case .countPill: pill
             case .focusPill:
-                if let item = store.active.first(where: { $0.id == state.focusedTaskID }) { focusPill(item) }
+                if let item = store.snapshot().first(where: { $0.id == state.focusedTaskID }) { focusPill(item) }
                 else { pill }
             }
         }
@@ -29,8 +29,27 @@ struct TodoView: View {
         .overlay(WindowResizeBorder().accessibilityHidden(true))
         .tint(PixelPalette.accent)
         .environment(\.readablePixelText, preferences.readableText)
-        .onChange(of: controller.focusRequest) { _, _ in entryFocused = true }
+        .onChange(of: controller.focusRequest) { _, request in
+            // Always reset first: SwiftUI may still hold a true FocusState after
+            // AppKit has ended the previous field-editing session.
+            entryFocused = false
+            guard let request else { return }
+            DispatchQueue.main.async {
+                guard controller.focusRequest == request, controller.hasKeyboardFocus,
+                      state.presentation == .list else { return }
+                entryFocused = true
+            }
+        }
+        .onChange(of: controller.hasKeyboardFocus) { _, focused in
+            if !focused { entryFocused = false }
+        }
+        .onChange(of: state.presentation) { _, presentation in
+            if presentation != .list { entryFocused = false }
+        }
         .onChange(of: controller.completionPulse) { _, _ in celebrate() }
+        .onChange(of: controller.completionEffects.isEmpty) { _, empty in
+            if empty { celebrationTask?.cancel(); celebrationFrame = 0 }
+        }
         .onDisappear { celebrationTask?.cancel() }
         .alert("Couldn’t save your task", isPresented: Binding(get: { store.errorMessage != nil }, set: { if !$0 { store.errorMessage = nil } })) {
             Button("OK") { store.errorMessage = nil }
@@ -40,6 +59,11 @@ struct TodoView: View {
     private var pill: some View {
         HStack(spacing: 8) {
             PixelIcon(glyph: celebrationFrame > 0 ? .checked : .spark, size: 16, color: celebrationFrame > 0 ? PixelPalette.accent : PixelPalette.gold)
+                .overlay {
+                    if let effect = controller.completionEffects.last(where: { $0.fromFocus }) {
+                        CompletionStarburst(step: effect.step, reducedMotion: effect.reducedMotion)
+                    }
+                }
             Text("\(store.active.count) \(store.active.count == 1 ? "task" : "tasks") left").pixelFont(14).lineLimit(1)
             PixelIcon(glyph: .expand, size: 12, color: PixelPalette.secondary)
         }
@@ -58,14 +82,18 @@ struct TodoView: View {
         }
     }
 
-    private func focusPill(_ item: TodoItem) -> some View {
-        HStack(spacing: 8) {
+    private func focusPill(_ item: TaskRecord) -> some View {
+        let effect = controller.completionEffects.first { $0.id == item.id }
+        return HStack(spacing: 8) {
             Button { controller.completeFocusedTask() } label: {
-                PixelIcon(glyph: .checkbox, size: 18)
-                    .frame(width: 32, height: 32)
+                CompletionCheckbox(completed: item.completedAt != nil, effect: effect)
                     .contentShape(Rectangle())
             }
             .buttonStyle(PixelButtonStyle(raised: false))
+            .overlay {
+                if let effect { CompletionStarburst(step: effect.step, reducedMotion: effect.reducedMotion) }
+            }
+            .allowsHitTesting(effect == nil)
             .help("Complete task")
             .accessibilityLabel("Complete \(item.text)")
 
@@ -170,8 +198,9 @@ struct TodoView: View {
                             Text("Add one thing. Start there.").pixelFont(14).foregroundStyle(PixelPalette.secondary)
                         }.frame(maxWidth: .infinity).padding(.vertical, 40)
                     }
-                    ForEach(store.active) { item in
-                        TaskRow(item: item, store: store, controller: controller, state: state)
+                    ForEach(visibleActiveRows, id: \.id) { item in
+                        TaskRow(item: item, store: store, controller: controller, state: state,
+                                completion: controller.completionEffects.first { $0.id == item.id })
                             .onDrag { NSItemProvider(object: item.id.uuidString as NSString) }
                             .onDrop(of: [.text], isTargeted: nil) { providers in
                                 guard let provider = providers.first else { return false }
@@ -197,7 +226,9 @@ struct TodoView: View {
                             .accessibilityValue(completedExpanded ? "Expanded" : "Collapsed")
                             if completedExpanded {
                                 VStack(spacing: 3) {
-                                    ForEach(store.completed) { item in TaskRow(item: item, store: store, controller: controller, state: state) }
+                                    ForEach(visibleCompletedRows, id: \.id) { item in
+                                        TaskRow(item: item, store: store, controller: controller, state: state)
+                                    }
                                 }.padding(.top, 5)
                             }
                         }.padding(.horizontal, 9).padding(.top, 12).padding(.bottom, 6)
@@ -216,13 +247,28 @@ struct TodoView: View {
                     }.accessibilityLabel("Add a task")
             }
             .padding(12).background(PixelPalette.inset)
-            .overlay(Rectangle().strokeBorder(entryFocused ? PixelPalette.accent : PixelPalette.edge.opacity(0.65), lineWidth: entryFocused ? 2 : 1))
+            .overlay(Rectangle().strokeBorder(entryFocused && controller.hasKeyboardFocus ? PixelPalette.accent : PixelPalette.edge.opacity(0.65), lineWidth: entryFocused && controller.hasKeyboardFocus ? 2 : 1)
+                .allowsHitTesting(false))
             .padding(.horizontal, 16).padding(.bottom, 18).padding(.top, 6)
         }
         .overlay(alignment: .bottomTrailing) {
             PixelIcon(glyph: .grip, size: 12, color: PixelPalette.secondary)
                 .frame(width: 18, height: 18).overlay(ResizeHandle()).help("Drag to resize")
         }
+    }
+
+    private var visibleActiveRows: [TaskRecord] {
+        let active = store.snapshot().filter { $0.completedAt == nil }
+        let departing = controller.completionEffects.filter(\.retainsListRow).map(\.record)
+        return (active + departing).sorted {
+            $0.order == $1.order ? $0.createdAt < $1.createdAt : $0.order < $1.order
+        }
+    }
+
+    private var visibleCompletedRows: [TaskRecord] {
+        let departing = Set(controller.completionEffects.filter(\.retainsListRow).map(\.id))
+        return store.snapshot().filter { $0.completedAt != nil && !departing.contains($0.id) }
+            .sorted { $0.completedAt! > $1.completedAt! }
     }
 
     private func celebrate() {
@@ -242,10 +288,11 @@ struct TodoView: View {
 }
 
 struct TaskRow: View {
-    let item: TodoItem
+    let item: TaskRecord
     @ObservedObject var store: TaskStore
     let controller: PanelController
     @ObservedObject var state: PanelState
+    var completion: TaskCompletionEffect? = nil
     @State private var hovered = false
     @State private var editing = false
     @State private var draft = ""
@@ -256,11 +303,11 @@ struct TaskRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Button {
+                if editing { commit() }
+                guard store.errorMessage == nil else { return }
                 controller.toggleTask(item.id)
             } label: {
-                PixelIcon(glyph: item.completedAt == nil ? .checkbox : .checked, size: 18,
-                          color: item.completedAt == nil ? PixelPalette.edge : PixelPalette.accent)
-                    .frame(width: 32, height: 32)
+                CompletionCheckbox(completed: item.completedAt != nil, effect: completion)
             }.buttonStyle(PixelButtonStyle(raised: false)).accessibilityLabel(item.completedAt == nil ? "Complete \(item.text)" : "Reopen \(item.text)")
 
             Group {
@@ -304,6 +351,15 @@ struct TaskRow: View {
         }
         .padding(.horizontal, 6).padding(.vertical, 3)
         .background(hovered ? PixelPalette.inset : Color.clear)
+        .modifier(CompletionRowExit(collapsing: completion?.isCollapsing == true))
+        .overlay(alignment: .topLeading) {
+            if let completion {
+                CompletionStarburst(step: completion.step, reducedMotion: completion.reducedMotion)
+                    .offset(x: -2, y: -5)
+            }
+        }
+        .allowsHitTesting(completion == nil)
+        .accessibilityHidden(completion != nil)
         .onHover { hovered = $0 }
         .contextMenu {
             if item.completedAt == nil { focusActions; Divider() }

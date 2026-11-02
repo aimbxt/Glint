@@ -12,6 +12,16 @@ final class GlintPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown {
+            // Claim real keyboard focus before SwiftUI starts a field editor.
+            // Ordering the floating panel alone does not activate its app.
+            if !NSApp.isActive { NSApp.activate() }
+            if !isKeyWindow { makeKey() }
+        }
+        super.sendEvent(event)
+    }
+
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
         if modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "q" {
@@ -50,16 +60,23 @@ final class PanelController: NSObject, ObservableObject, NSWindowDelegate {
     private var snapTarget: NSRect?
     private var screenLayoutTimer: Timer?
     private var lastScreenLayout: [SnapScreen] = []
-    @Published var focusRequest = UUID()
+    @Published private(set) var focusRequest: UUID?
+    @Published private(set) var hasKeyboardFocus = false
+    private var entryFocusPending = false
     @Published var visible = true
     @Published private(set) var completionPulse = 0
+    @Published private(set) var completionEffects: [TaskCompletionEffect] = []
+    private var completionTasks: [UUID: Task<Void, Never>] = [:]
+    private var completingFocusID: UUID?
 
     init(store: TaskStore, preferences: Preferences) {
         self.store = store
         self.preferences = preferences
         self.state = PanelState(activeTaskIDs: Set(store.active.map(\.id)))
         super.init()
-        let window = GlintPanel(contentRect: NSRect(x: 0, y: 0, width: 300, height: 380), styleMask: [.borderless, .resizable, .nonactivatingPanel], backing: .buffered, defer: false)
+        // A normal activating panel acquires keyboard focus on interaction.
+        // Passive orderFrontRegardless still leaves the other app's focus alone.
+        let window = GlintPanel(contentRect: NSRect(x: 0, y: 0, width: 300, height: 380), styleMask: [.borderless, .resizable], backing: .buffered, defer: false)
         panel = window
         window.title = "Glint"
         window.isReleasedWhenClosed = false
@@ -87,11 +104,22 @@ final class PanelController: NSObject, ObservableObject, NSWindowDelegate {
         }.store(in: &subscriptions)
         store.$revision.dropFirst().sink { [weak self] _ in
             guard let self else { return }
+            // Undo, reopening, deletion, or a failed save must remove stale visuals.
+            for effect in self.completionEffects where !self.store.completed.contains(where: {
+                $0.id == effect.id && $0.completedAt == effect.record.completedAt
+            }) {
+                self.removeCompletionEffect(effect.id)
+            }
+            if self.state.presentation == .focusPill,
+               let id = self.completingFocusID, self.state.focusedTaskID == id,
+               self.store.completed.contains(where: { $0.id == id }) { return }
             self.transition { self.state.reconcile(activeTaskIDs: Set(self.store.active.map(\.id))) }
         }.store(in: &subscriptions)
         shortcut.onPress = { [weak self] in self?.toggleVisibility() }
         updateShortcut()
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(applicationBecameActive), name: NSApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(applicationResignedActive), name: NSApplication.didResignActiveNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(accessibilityChanged), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(workspaceChanged), name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
         // Track usable bounds, including Dock changes, while attached. Reposition
@@ -121,14 +149,45 @@ final class PanelController: NSObject, ObservableObject, NSWindowDelegate {
         ensureReachable()
         if focus {
             showList()
+            entryFocusPending = true
+            // A shortcut or Show command explicitly asks us to take focus.
             NSApp.activate(ignoringOtherApps: true)
             panel.makeKeyAndOrderFront(nil)
-            focusRequest = UUID()
+            updateKeyboardFocus()
         } else { panel.orderFrontRegardless() }
     }
-    func hide() { panel.makeFirstResponder(nil); panel.orderOut(nil); visible = false }
+    func hide() { cancelEntryFocus(); clearCompletionEffects(); panel.makeFirstResponder(nil); panel.orderOut(nil); visible = false; hasKeyboardFocus = false }
     func quit() { panel.makeFirstResponder(nil); NSApp.terminate(nil) }
     func toggleVisibility() { visible ? hide() : show() }
+
+    private func cancelEntryFocus() {
+        entryFocusPending = false
+        focusRequest = nil
+    }
+
+    private func updateKeyboardFocus() {
+        let ready = NSApp.isActive && panel.isKeyWindow && visible
+        if hasKeyboardFocus != ready { hasKeyboardFocus = ready }
+        // App activation is asynchronous. Deliver only after both events arrive,
+        // regardless of whether the app or the panel becomes active first.
+        if ready && entryFocusPending && state.presentation == .list {
+            entryFocusPending = false
+            focusRequest = UUID()
+        }
+    }
+
+    @objc private func applicationBecameActive() { updateKeyboardFocus() }
+    @objc private func applicationResignedActive() {
+        cancelEntryFocus()
+        hasKeyboardFocus = false
+        panel.makeFirstResponder(nil)
+    }
+    func windowDidBecomeKey(_ notification: Notification) { updateKeyboardFocus() }
+    func windowDidResignKey(_ notification: Notification) {
+        cancelEntryFocus()
+        hasKeyboardFocus = false
+        panel.makeFirstResponder(nil)
+    }
 
     private func makePanelMenu() -> NSMenu {
         let menu = NSMenu()
@@ -187,29 +246,85 @@ final class PanelController: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     func toggleCollapse() {
+        cancelEntryFocus()
+        clearCompletionEffects()
         panel.makeFirstResponder(nil)
         transition { state.presentation == .list ? state.collapse() : state.showList() }
     }
 
     func showList() {
+        cancelEntryFocus()
+        clearCompletionEffects()
         panel.makeFirstResponder(nil)
         transition { state.showList() }
     }
     func focus(on id: UUID) {
+        cancelEntryFocus()
+        clearCompletionEffects()
         panel.makeFirstResponder(nil)
         transition { state.focus(on: id, activeTaskIDs: Set(store.active.map(\.id))) }
     }
-    func stopFocusing() { transition { state.stopFocusing() } }
+    func stopFocusing() { clearCompletionEffects(); transition { state.stopFocusing() } }
     func completeFocusedTask() {
         guard let id = state.focusedTaskID, store.active.contains(where: { $0.id == id }) else { return }
         toggleTask(id)
-        // The store revision subscription clears focus only after a successful save.
+        // Save now; the short visual handoff clears focus after its checkmark pop.
     }
 
     func toggleTask(_ id: UUID) {
         let wasActive = store.active.contains(where: { $0.id == id })
+        let reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let fromFocus = wasActive && state.presentation == .focusPill && state.focusedTaskID == id
+        if fromFocus && !reducedMotion { completingFocusID = id }
         store.toggle(id)
-        if wasActive, store.completed.contains(where: { $0.id == id }) { completionPulse += 1 }
+        guard wasActive, let record = store.snapshot().first(where: { $0.id == id && $0.completedAt != nil }) else {
+            if completingFocusID == id { completingFocusID = nil }
+            return
+        }
+        completionPulse += 1
+        let effect = TaskCompletionEffect(record: record, fromFocus: fromFocus, reducedMotion: reducedMotion)
+        completionTasks[id]?.cancel()
+        completionEffects.removeAll { $0.id == id }
+        completionEffects.append(effect)
+        completionTasks[id] = Task { @MainActor [weak self] in
+            do {
+                if reducedMotion {
+                    try await Task.sleep(for: .milliseconds(240))
+                } else {
+                    for step in 1...7 {
+                        try await Task.sleep(for: .milliseconds(60))
+                        guard let self, let index = self.completionEffects.firstIndex(where: { $0.token == effect.token }) else { return }
+                        self.completionEffects[index].step = step
+                        if step == 3 && self.completingFocusID == id { self.finishFocusCompletion() }
+                    }
+                    try await Task.sleep(for: .milliseconds(30))
+                }
+                self?.removeCompletionEffect(id)
+            } catch { }
+        }
+    }
+
+    private func finishFocusCompletion() {
+        let id = completingFocusID
+        completingFocusID = nil
+        transition {
+            // Even an immediate Undo restores the task without resuming focus.
+            if let id, state.focusedTaskID == id { state.stopFocusing() }
+            else { state.reconcile(activeTaskIDs: Set(store.active.map(\.id))) }
+        }
+    }
+
+    private func removeCompletionEffect(_ id: UUID) {
+        completionTasks.removeValue(forKey: id)?.cancel()
+        completionEffects.removeAll { $0.id == id }
+        if completingFocusID == id { finishFocusCompletion() }
+    }
+
+    private func clearCompletionEffects() {
+        for task in completionTasks.values { task.cancel() }
+        completionTasks.removeAll()
+        completionEffects.removeAll()
+        if completingFocusID != nil { finishFocusCompletion() }
     }
 
     private func transition(_ change: () -> Void) {
@@ -251,7 +366,10 @@ final class PanelController: NSObject, ObservableObject, NSWindowDelegate {
     }
     @objc private func workspaceChanged() { ensureReachable() }
     @objc private func accessibilityChanged() {
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { cancelSnapAnimation(finish: true) }
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            cancelSnapAnimation(finish: true)
+            clearCompletionEffects()
+        }
     }
 
     private var snapScreens: [SnapScreen] {
@@ -322,6 +440,7 @@ final class PanelController: NSObject, ObservableObject, NSWindowDelegate {
             window.center()
             settingsWindow = window
         }
+        cancelEntryFocus()
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
     }

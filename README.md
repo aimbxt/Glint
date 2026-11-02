@@ -7,6 +7,7 @@ A small, translucent pixel-art to-do list that floats beside your work. Cozy cre
 Double-click **Glint.app** in this project folder. It starts near the upper-right corner of your main screen. Its pixel spark icon appears in the menu bar; it has no Dock icon.
 
 - Type in **Add a task…** and press Return to add a task.
+- Clicking task entry acquires keyboard focus even after switching apps or closing Settings. Explicit Show requests wait for the app and panel to receive keyboard focus before focusing entry; hiding or switching away clears its focus indicator while preserving unfinished text.
 - Click a square checkbox to complete or reopen a task. Expand **Completed** to see finished tasks.
 - Double-click task text, or use its options menu, to edit. Return saves; Escape cancels. Leaving the field also saves. Blank edits leave the original text intact.
 - Drag task rows to reorder them, or choose **Move Up / Move Down** from a row’s menu. Dropping a row places it before the target row.
@@ -29,7 +30,9 @@ Pixelify Sans is bundled locally in `Resources/Fonts`, including its SIL Open Fo
 
 Enable **Readable text** in Settings to use the system font while retaining the pixel colors and controls. This preference is saved. Native macOS menus, alerts, title bars, and checkbox behavior remain native.
 
-Buttons depress by one point when pressed. Successful task completion briefly displays a pixel check or sparkle. Reduce Motion removes the changing sparkle frames and keeps snap placement immediate. Reduce Transparency makes the panel background fully opaque. Icons are drawn on a display-aligned pixel grid; all edge/corner resizing and snapping remain available.
+Buttons depress by one point when pressed. Completing a task saves immediately, pops a green checkbox into place, and sends a small gold pixel star and four tiny sparks around it. A value copy of the completed row holds briefly, then closes its space; the whole effect finishes in about 450 milliseconds. The existing counter sparkle plays at the same time. Rapid completions have independent effects. Focus mode holds the checkmark for 180 milliseconds, then finishes the sparkle in the count pill. Reopening stays quiet, and undo/deletion cancels any unfinished effect. There is no sound.
+
+Reduce Motion removes the departing row immediately and uses brief stationary feedback instead of movement or changing sparkle frames; snap placement is immediate too. Reduce Transparency makes the panel background fully opaque. Icons are drawn on a display-aligned pixel grid; all edge/corner resizing and snapping remain available.
 
 ## Edge snapping
 
@@ -64,6 +67,8 @@ With Apple Command Line Tools installed:
 ./test.sh
 ```
 
+On a logged-in Mac desktop, `./test-feedback.sh` runs 29 additional AppKit checks in an isolated helper app with an in-memory list and its own preferences domain. These cover immediate saving, overlapping effects, cancellation, reopening, the focus-mode handoff, and real field-editor focus/draft preservation across hide/show and Settings. It does not change your Glint tasks or settings. `./test-feedback.sh --build-only` builds the helper without launching it; its result appears in `build/completion-feedback-result.txt` after a run.
+
 The build produces **Glint.app** in this folder for the current Mac’s architecture. The included local build is for Apple silicon and is ad-hoc signed. It has not been notarized or signed for public distribution.
 
 With full Xcode installed, open **Glint.xcodeproj**, select the **Glint** scheme and **My Mac**, then Run. Xcode uses the standard SwiftData `@Model` declaration. The command-line build uses its checked-in explicit model expansion because Apple’s Command Line Tools omit the SwiftData macro plugin. Both paths use the same SwiftData schema and store, with CloudKit disabled.
@@ -80,10 +85,10 @@ The panel floats over ordinary windows by default and joins desktop Spaces on it
 
 ## Validation status
 
-The command-line app compiles and its code signature verifies. The test runner passes 92 checks covering tasks, undo/redo, persistence, resizing, focus mode, snapping thresholds and corners, negative display coordinates, display selection, Option bypass, attachment restoration, independent presentation sizes, and drag-versus-click detection.
+The command-line app compiles and its code signature verifies. The main test runner passes 92 checks covering tasks, undo/redo, persistence, resizing, focus mode, snapping thresholds and corners, negative display coordinates, display selection, Option bypass, attachment restoration, independent presentation sizes, and drag-versus-click detection. The isolated AppKit helper passes 29 additional completion-feedback and keyboard-focus checks.
 
 The packaged Pixelify Sans font was registered and checked against expected interface text, and its license is present. The Xcode project metadata validates and includes the font folder as a bundle resource.
 
-Live UI access was enabled during the Quit-control fix. The full-list header, visible X, native pixel menu images, task-row context actions, both compact views, right-click Quit menus, and quitting/reopening were checked in the running macOS app. Full Xcode is not installed here, so its build path remains unverified. Before a release, finish the broader checklist in **VALIDATION.md**, especially minimum window sizes, font fallback, and keyboard/VoiceOver interaction, on actual macOS 15 and newer systems.
+Live UI access was enabled during the Quit-control fix. The full-list header, visible X, native pixel menu images, task-row context actions, both compact views, right-click Quit menus, and quitting/reopening were checked in the running macOS app. Completion starbursts, rapid completions, wrapped task exits, focus-to-count handoff, and undo were checked with temporary tasks; those tasks were removed afterward and the original focus selection restored. Keyboard input was also checked with individual key presses, switching away and back, closing Settings, collapse/expand, and Return followed by further typing. The temporary input-verification task was undone. Full Xcode is not installed here, so its build path remains unverified. Before a release, finish the broader checklist in **VALIDATION.md**, especially minimum window sizes, font fallback, and keyboard/VoiceOver interaction, on actual macOS 15 and newer systems.
 
 Later possibilities: multiple lists, optional Apple Reminders integration, and due dates. These are intentionally outside this version.

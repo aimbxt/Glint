@@ -2,10 +2,17 @@
 
 Automated checks: run `./test.sh`. Compile/package with `./build.sh`; validate the bundle with `codesign --verify --deep --strict Glint.app`. Xcode project metadata can be linted with `plutil -lint Glint.xcodeproj/project.pbxproj`.
 
+On a logged-in desktop, `./test-feedback.sh` runs 29 additional AppKit completion and keyboard-focus checks in an isolated helper app. Verify its result in `build/completion-feedback-result.txt`. The helper uses only an in-memory list and its own preferences domain. These checks cover immediate save, retained value snapshots, independent rapid completions, Undo during/after focus handoff, reopening, replacement tokens, deletion, hiding, passive display without focus, real SwiftUI field-editor focus on Show, draft preservation across hide/show, Settings, and immediate cancellation of queued entry focus. The helper runs a full NSApplication event loop so asynchronous app activation is exercised.
+
+Completion UI checked live: normal and wrapped tasks, two rapid completions, the counter sparkle, focus-to-count handoff, and Undo. Temporary test tasks were removed and the original selection restored.
+
+Keyboard UI checked live: individual keystrokes, switching to Finder and clicking back once, clearing the focus indicator while inactive, closing Settings, collapse/expand, and Return followed by typing into a fresh entry. The temporary input-verification task was undone. Automated checks also cover show/hide and Settings focus transitions with the actual field editor.
+
 Manual checks still required:
 
 - Launch the app on macOS 15; verify the empty-state pixel spark, stepped translucent surface, pixel font, pixel menu bar icon, and absence of a Dock icon.
 - Add several tasks, a long wrapping task, and whitespace-only input. Verify Return keeps task entry focused.
+- Switch repeatedly between Glint and another app while a draft is present. One click in task entry should accept typing; inactive entry should have no active border/caret. Repeat after closing Settings, expanding the pill, and Show through the menu bar/global shortcut. Hide and immediately show again; the draft should remain and no cancelled focus request should steal typing later. Leave Glint visible at launch and verify the previous app keeps its keyboard focus until Glint is clicked or explicitly summoned.
 - Edit by double-click and options menu. Verify Return saves, Escape cancels, focus loss saves, and blank edits preserve the original.
 - Complete/reopen tasks; expand Completed; delete from both sections. Verify Undo/Redo for completion, edits, deletion, and reorder.
 - Drag a task upward and downward; verify Move Up / Move Down reaches every position without losing tasks.
@@ -38,6 +45,8 @@ Manual checks still required:
 - At minimum list, count-bar, and focus-bar sizes, verify text wraps/truncates without overlapping the controls. Repeat at 1× and Retina display scales and after moving between displays. Pixel icon cells and stepped borders should stay crisp.
 - Verify square task checkboxes and pixel menu/collapse/list buttons retain their full click areas and are reachable by keyboard. Check VoiceOver labels for all icon-only actions and for the Completed disclosure. Native menus and alerts should remain legible.
 - Complete a task from both list and focus mode; verify brief check/spark feedback, successful undo, and no celebratory feedback on a failed save or reopened task.
+- Verify the checkbox shrinks, pops into a filled check, and settles; one gold pixel star and four tiny particles should stay within about 48 points. The outgoing task should retain readable struck-through text briefly, close its space, and disappear within about 450 ms. Expand Completed during the effect and verify there is no duplicate live row. Complete several tasks quickly, undo during a burst, and switch views or hide mid-animation; no effect should replay or remain stuck.
+- Verify focus completion saves immediately, holds its checkmark for about 180 ms, then returns to the count pill with the remaining sparkle. Undo even during that short hold should restore the task while keeping focus cleared. With Reduce Motion enabled, verify immediate row removal and stationary feedback without animated frames. Repeat using keyboard activation and VoiceOver; decorative copies and particles must not become extra accessibility elements.
 - On a newer macOS version, build with its Xcode SDK and repeat appearance and interaction checks. There is no Liquid Glass branch in this pixel-themed version.
 
 Distribution is separate: select a signing team, sign and notarize, validate both supported architectures as needed, and test the distributed artifact on a clean Mac.
